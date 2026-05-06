@@ -1,0 +1,14 @@
+[project]
+name = "multimodal-triage-intake"
+version = "0.1.0"
+description = "Low-latency multimodal triage and intake (Phase 1: audio WebSocket + Deepgram)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "deepgram-sdk>=3.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phase 1 — Live audio (PCM → WebSocket)</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #0f1419; color: #e7ecf3; }
+    body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-weight: 600; font-size: 1.25rem; }
+    button {
+      background: #3b82f6; color: #fff; border: none; padding: 0.5rem 1rem;
+      border-radius: 6px; cursor: pointer; font-size: 1rem;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #log {
+      margin-top: 1rem; padding: 1rem; background: #151c24; border-radius: 8px;
+      min-height: 12rem; white-space: pre-wrap; font-size: 0.9rem; line-height: 1.45;
+    }
+    .meta { color: #8b9cb3; font-size: 0.85rem; margin-bottom: 1rem; }
+    .interim { color: #94a3b8; }
+    .final { color: #e2e8f0; }
+  </style>
+</head>
+<body>
+  <h1>Live transcription</h1>
+  <p class="meta">
+    Sends mono linear16 PCM at the AudioContext sample rate (shown below). Ensure
+    <code>DEEPGRAM_API_KEY</code> is set on the server.
+  </p>
+  <p class="meta" id="sr"></p>
+  <button id="btn" type="button">Start microphone</button>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById("log");
+    const btn = document.getElementById("btn");
+    const srEl = document.getElementById("sr");
+
+    function floatTo16BitPCM(float32Array) {
+      const buf = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buf);
+      for (let i = 0; i < float32Array.length; i++) {
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return buf;
+    }
+
+    let ws;
+    let audioCtx;
+    let processor;
+    let source;
+
+    function appendLine(text, cls) {
+      const span = document.createElement("div");
+      span.className = cls || "";
+      span.textContent = text;
+      logEl.appendChild(span);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    btn.addEventListener("click", async () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        stop();
+        btn.textContent = "Start microphone";
+        return;
+      }
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      await audioCtx.resume();
+
+      const sr = Math.round(audioCtx.sampleRate);
+      srEl.textContent = `Sample rate: ${sr} Hz (mono linear16)`;
+
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const url = `${proto}://${location.host}/ws/audio?sample_rate=${sr}`;
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        appendLine("WebSocket connected.", "final");
+        btn.textContent = "Stop";
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "transcript" && msg.text) {
+            const line = (msg.is_final ? "● " : "… ") + msg.text;
+            appendLine(line, msg.is_final ? "final" : "interim");
+          }
+        } catch {
+          appendLine(ev.data, "interim");
+        }
+      };
+
+      ws.onerror = () => appendLine("WebSocket error.", "interim");
+      ws.onclose = () => {
+        appendLine("WebSocket closed.", "interim");
+        cleanupAudio();
+        btn.textContent = "Start microphone";
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      source = audioCtx.createMediaStreamSource(stream);
+      processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const input = e.inputBuffer.getChannelData(0);
+        ws.send(floatTo16BitPCM(input));
+      };
+      const mute = audioCtx.createGain();
+      mute.gain.value = 0;
+      source.connect(processor);
+      processor.connect(mute);
+      mute.connect(audioCtx.destination);
+    });
+
+    function cleanupAudio() {
+      try {
+        if (processor) {
+          processor.disconnect();
+          processor.onaudioprocess = null;
+        }
+        if (source) source.disconnect();
+        if (audioCtx) audioCtx.close();
+      } catch (_) { /* ignore */ }
+      processor = null;
+      source = null;
+      audioCtx = null;
+    }
+
+    function stop() {
+      cleanupAudio();
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+      ws = null;
+    }
+  </script>
+</body>
+</html>
